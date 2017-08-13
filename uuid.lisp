@@ -6,7 +6,9 @@
 
 (cl:defpackage :uuid
   (:use :common-lisp)
-  (:export :uuid :*ticks-per-count* :format-as-urn :make-null-uuid :make-uuid-from-string
+  (:export :uuid :*ticks-per-count* :format-as-urn
+	   :string-to-byte-array :byte-array-to-string
+           :make-null-uuid :make-uuid-from-string :string-to-uuid
 	   :make-v1-uuid :make-v3-uuid :make-v4-uuid :make-v5-uuid :uuid=
 	   :+namespace-dns+ :+namespace-url+ :+namespace-oid+ :+namespace-x500+
 	   :print-bytes :uuid-to-byte-array :byte-array-to-uuid))
@@ -60,6 +62,9 @@ can be set to INTERNAL-TIME-UNITS-PER-SECOND")
   (:documentation "Represents an uuid"))
 
 (defun make-uuid-from-string (string)
+  (string-to-uuid string))
+
+(defun string-to-uuid (string)
   "Creates an uuid from the string represenation of an uuid. (example input string 6ba7b810-9dad-11d1-80b4-00c04fd430c8)"
   (unless (= (length string) 36)
     (error "~@<Could not parse ~S as UUID: string representation ~
@@ -81,6 +86,42 @@ characters.~@:>" string (length string)))
 		   :clock-seq-var (parse-block string 19 21)
 		   :clock-seq-low (parse-block string 21 23)
 		   :node          (parse-block string 24 36))))
+
+(defun string-to-byte-array (string)
+  "Converts a uuid string to a byte-array"
+  (unless (= (length string) 36)
+    (error "~@<Could not parse ~S as UUID: string representation ~
+has invalid length (~D). A valid UUID string representation has 36 ~
+characters.~@:>" string (length string)))
+  (unless (and (eq (aref string  8) #\-)
+	       (eq (aref string 13) #\-)
+	       (eq (aref string 18) #\-)
+	       (eq (aref string 23) #\-))
+    (error "~@<Could not parse ~S as UUID: positions 8, ~
+13, 18, 21 and 23 have to contain ~C (~A) characters.~@:>"
+	   string #\- (char-name #\-)))
+  (labels ((parse-block (string start end)
+	       (parse-integer string :start start :end end :radix 16)))
+    (let ((array (make-array 16 :element-type '(unsigned-byte 8)))
+	  (time-low (parse-block string  0 8))
+	  (time-mid (parse-block string  9 13))
+	  (time-high-and-version (parse-block string 14 18))
+	  (clock-seq-and-reserved (parse-block string 19 21))
+	  (clock-seq-low (parse-block string 21 23))
+	  (node (parse-block string 24 36)))
+      (loop for i from 3 downto 0
+	    do (setf (aref array (- 3 i)) (ldb (byte 8 (* 8 i)) time-low)))
+      (loop for i from 5 downto 4
+	    do (setf (aref array i) (ldb (byte 8 (* 8 (- 5 i))) time-mid)))
+      (loop for i from 7 downto 6
+	    do (setf (aref array i) (ldb (byte 8 (* 8 (- 7 i))) time-high-and-version)))
+      (setf (aref array 8) (ldb (byte 8 0) clock-seq-and-reserved))
+      (setf (aref array 9) (ldb (byte 8 0) clock-seq-low))
+      (loop for i from 15 downto 10
+	    do (setf (aref array i) (ldb (byte 8 (* 8 (- 15 i))) node)))
+      array)))
+
+
 
 (defparameter +namespace-dns+ (make-uuid-from-string "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
   "The DNS Namespace. Can be used for the generation of uuids version 3 and 5")
@@ -283,6 +324,22 @@ characters.~@:>" string (length string)))
 		  :clock-seq-var (aref array 8)
 		  :clock-seq-low (aref array 9)
 		  :node (arr-to-bytes 10 15 array)))
+
+(defun string-to-byte-array (array)
+  "Converts a byte-array generated a string representation of the uuid."
+  (assert (and (= (array-rank array) 1)
+               (= (array-total-size array) 16))
+          (array)
+          "Please provide a one-dimensional array with 16 elements of type (unsigned-byte 8)")
+  (with-output-to-string (stream)
+  (format stream "~8,'0X-~4,'0X-~4,'0X-~2,'0X~2,'0X-~12,'0X"
+
+	     (arr-to-bytes 0 3 array)
+             (arr-to-bytes 4 5 array)
+             (arr-to-bytes 6 7 array)
+             (aref array 8)
+             (aref array 9)
+             (arr-to-bytes 10 15 array))))
 
 (defun digest-uuid (digest uuid name)
   "Helper function that produces a digest from a namespace (a byte array) and a string. Used for the
